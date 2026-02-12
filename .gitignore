@@ -1,0 +1,9 @@
+# Binaries
+nox-plugin-lsp
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/

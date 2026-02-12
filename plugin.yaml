@@ -1,0 +1,11 @@
+name: nox-plugin-lsp
+version: 0.1.0
+track: developer-experience
+description: LSP server that surfaces nox findings as editor diagnostics with inline suppression and hover details
+tools:
+  - name: publish_diagnostics
+    description: Publish nox findings as LSP diagnostics to the editor
+  - name: code_action
+    description: Provide inline suppression code actions for findings
+  - name: hover
+    description: Show finding details on hover
