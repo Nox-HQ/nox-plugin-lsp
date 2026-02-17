@@ -1,10 +1,142 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"strings"
 	"testing"
+
+	pluginv1 "github.com/nox-hq/nox/gen/nox/plugin/v1"
+	"github.com/nox-hq/nox/registry"
+	"github.com/nox-hq/nox/sdk"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/structpb"
 )
+
+func TestConformance(t *testing.T) {
+	srv := buildServer()
+	sdk.RunConformance(t, srv)
+}
+
+func TestTrackConformance(t *testing.T) {
+	srv := buildServer()
+	sdk.RunForTrack(t, srv, registry.TrackDeveloperExperience)
+}
+
+func TestConvertDiagnosticsWithScanContext(t *testing.T) {
+	client := testClient(t)
+
+	input, err := structpb.NewStruct(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.InvokeTool(context.Background(), &pluginv1.InvokeToolRequest{
+		ToolName: "convert_diagnostics",
+		Input:    input,
+		ScanContext: &pluginv1.ScanContext{
+			Findings: []*pluginv1.Finding{
+				{
+					RuleId:      "SEC-001",
+					Severity:    sdk.SeverityHigh,
+					Confidence:  sdk.ConfidenceHigh,
+					Message:     "Hardcoded AWS access key detected",
+					Fingerprint: "fp-sec-001",
+					Location: &pluginv1.Location{
+						FilePath:  "/workspace/config.go",
+						StartLine: 42,
+						EndLine:   42,
+					},
+					Metadata: map[string]string{"cwe": "798"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("InvokeTool: %v", err)
+	}
+
+	if len(resp.GetEnrichments()) != 1 {
+		t.Fatalf("expected 1 enrichment, got %d", len(resp.GetEnrichments()))
+	}
+
+	e := resp.GetEnrichments()[0]
+	if e.GetKind() != "lsp-diagnostic" {
+		t.Errorf("kind = %q, want lsp-diagnostic", e.GetKind())
+	}
+	if e.GetSource() != "nox/lsp" {
+		t.Errorf("source = %q, want nox/lsp", e.GetSource())
+	}
+	if !strings.Contains(e.GetBody(), "SEC-001") {
+		t.Error("body should contain rule ID")
+	}
+	if !strings.Contains(e.GetBody(), "nox:ignore") {
+		t.Error("body should contain suppression action")
+	}
+}
+
+func TestConvertDiagnosticsNoContext(t *testing.T) {
+	client := testClient(t)
+
+	input, err := structpb.NewStruct(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.InvokeTool(context.Background(), &pluginv1.InvokeToolRequest{
+		ToolName: "convert_diagnostics",
+		Input:    input,
+	})
+	if err != nil {
+		t.Fatalf("InvokeTool: %v", err)
+	}
+
+	if len(resp.GetEnrichments()) != 0 {
+		t.Errorf("expected 0 enrichments without scan context, got %d", len(resp.GetEnrichments()))
+	}
+}
+
+func TestGetSettings(t *testing.T) {
+	client := testClient(t)
+
+	input, err := structpb.NewStruct(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := client.InvokeTool(context.Background(), &pluginv1.InvokeToolRequest{
+		ToolName: "get_settings",
+		Input:    input,
+	})
+	if err != nil {
+		t.Fatalf("InvokeTool: %v", err)
+	}
+
+	if len(resp.GetEnrichments()) != 1 {
+		t.Fatalf("expected 1 enrichment, got %d", len(resp.GetEnrichments()))
+	}
+
+	e := resp.GetEnrichments()[0]
+	if e.GetKind() != "lsp-settings" {
+		t.Errorf("kind = %q, want lsp-settings", e.GetKind())
+	}
+
+	var settings WorkspaceSettings
+	if err := json.Unmarshal([]byte(e.GetBody()), &settings); err != nil {
+		t.Fatalf("failed to parse settings: %v", err)
+	}
+	if !settings.Enabled {
+		t.Error("Enabled should be true")
+	}
+	if settings.MaxDiagnostics != 100 {
+		t.Errorf("MaxDiagnostics = %d, want 100", settings.MaxDiagnostics)
+	}
+}
+
+// --- Domain logic unit tests (preserved from Gen 1) ---
 
 func TestSeverityToLSP(t *testing.T) {
 	tests := []struct {
@@ -46,7 +178,6 @@ func TestFindingToDiagnostic(t *testing.T) {
 
 	diag := FindingToDiagnostic(f)
 
-	// Range should be 0-indexed (line 42 -> 41).
 	if diag.Range.Start.Line != 41 {
 		t.Errorf("Start.Line = %d, want 41", diag.Range.Start.Line)
 	}
@@ -59,34 +190,24 @@ func TestFindingToDiagnostic(t *testing.T) {
 	if diag.Range.End.Character != 50 {
 		t.Errorf("End.Character = %d, want 50", diag.Range.End.Character)
 	}
-
-	// Severity mapping.
 	if diag.Severity != DiagnosticSeverityError {
 		t.Errorf("Severity = %d, want %d (Error)", diag.Severity, DiagnosticSeverityError)
 	}
-
-	// Code and source.
 	if diag.Code != "SEC-001" {
 		t.Errorf("Code = %q, want SEC-001", diag.Code)
 	}
 	if diag.Source != "nox" {
 		t.Errorf("Source = %q, want nox", diag.Source)
 	}
-
-	// Message.
 	if diag.Message != "Hardcoded secret detected" {
 		t.Errorf("Message = %q, want 'Hardcoded secret detected'", diag.Message)
 	}
-
-	// CWE link.
 	if diag.CodeDescription == nil {
 		t.Fatal("expected CodeDescription with CWE link")
 	}
 	if !strings.Contains(diag.CodeDescription.Href, "798") {
 		t.Errorf("CodeDescription.Href = %q, want CWE-798 link", diag.CodeDescription.Href)
 	}
-
-	// Data metadata.
 	if diag.Data["severity"] != "high" {
 		t.Errorf("Data[severity] = %q, want high", diag.Data["severity"])
 	}
@@ -124,12 +245,10 @@ func TestFindingsToPublishParams(t *testing.T) {
 
 	params := FindingsToPublishParams(findings)
 
-	// Should produce params for 2 distinct files.
 	if len(params) != 2 {
 		t.Fatalf("expected 2 PublishDiagnosticsParams, got %d", len(params))
 	}
 
-	// Count total diagnostics.
 	totalDiags := 0
 	for _, p := range params {
 		totalDiags += len(p.Diagnostics)
@@ -170,8 +289,6 @@ func TestCreateSuppressionAction(t *testing.T) {
 	if action.IsPreferred {
 		t.Error("suppression should not be preferred action")
 	}
-
-	// Verify the edit inserts on the line above the finding.
 	if action.Edit == nil {
 		t.Fatal("expected non-nil Edit")
 	}
@@ -184,7 +301,7 @@ func TestCreateSuppressionAction(t *testing.T) {
 	}
 
 	edit := changes[0]
-	if edit.Range.Start.Line != 41 { // 0-indexed line above 42
+	if edit.Range.Start.Line != 41 {
 		t.Errorf("edit line = %d, want 41 (line above finding)", edit.Range.Start.Line)
 	}
 	if !strings.Contains(edit.NewText, "nox:ignore SEC-001") {
@@ -208,7 +325,6 @@ func TestCreateSuppressionAction_FirstLine(t *testing.T) {
 		t.Fatalf("expected 1 text edit, got %d", len(changes))
 	}
 
-	// Line 1 (0-indexed: 0) means suppression goes to line 0.
 	if changes[0].Range.Start.Line != 0 {
 		t.Errorf("edit line = %d, want 0 for first-line finding", changes[0].Range.Start.Line)
 	}
@@ -277,7 +393,6 @@ func TestCreateHoverContent_Minimal(t *testing.T) {
 	if !strings.Contains(md, "IAC-002") {
 		t.Error("hover should contain rule ID")
 	}
-	// Should not contain CWE or remediation sections.
 	if strings.Contains(md, "CWE") {
 		t.Error("hover should not contain CWE when not provided")
 	}
@@ -311,7 +426,6 @@ func TestDefaultWorkspaceSettings(t *testing.T) {
 		t.Error("ShowInlineHints should be true by default")
 	}
 
-	// Severity filter should include critical, high, medium by default.
 	expected := map[string]bool{"critical": true, "high": true, "medium": true}
 	for _, s := range settings.SeverityFilter {
 		if !expected[s] {
@@ -379,4 +493,32 @@ func TestCodeActionJSONSerialization(t *testing.T) {
 	if decoded.Edit == nil {
 		t.Fatal("decoded Edit should not be nil")
 	}
+}
+
+// --- helpers ---
+
+func testClient(t *testing.T) pluginv1.PluginServiceClient {
+	t.Helper()
+	const bufSize = 1024 * 1024
+
+	lis := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	pluginv1.RegisterPluginServiceServer(grpcServer, buildServer())
+
+	go func() { _ = grpcServer.Serve(lis) }()
+	t.Cleanup(func() { grpcServer.Stop() })
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufconn",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return lis.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return pluginv1.NewPluginServiceClient(conn)
 }

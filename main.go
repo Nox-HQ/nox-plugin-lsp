@@ -1,20 +1,17 @@
-// Package main implements the nox-plugin-lsp scaffold.
-//
-// This plugin provides an LSP (Language Server Protocol) server that surfaces
-// nox security findings directly in editors (VS Code, Neovim, etc.) as:
-//   - Diagnostics (squiggly underlines with severity)
-//   - Code actions (inline suppression via nox:ignore comments)
-//   - Hover information (finding details, remediation, CWE references)
-//
-// This is a scaffold demonstrating the LSP message structures and formatting
-// logic. The full implementation would use a proper LSP library (e.g.,
-// go-lsp or gopls-style server) and integrate with the nox scan pipeline.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
+
+	pluginv1 "github.com/nox-hq/nox/gen/nox/plugin/v1"
+	"github.com/nox-hq/nox/sdk"
 )
+
+var version = "dev"
 
 // LSP protocol constants.
 const (
@@ -72,12 +69,12 @@ type PublishDiagnosticsParams struct {
 
 // CodeAction represents an LSP code action (e.g., inline suppression).
 type CodeAction struct {
-	Title       string          `json:"title"`
-	Kind        string          `json:"kind"`
-	Diagnostics []Diagnostic    `json:"diagnostics,omitempty"`
-	IsPreferred bool            `json:"isPreferred,omitempty"`
-	Edit        *WorkspaceEdit  `json:"edit,omitempty"`
-	Command     *Command        `json:"command,omitempty"`
+	Title       string         `json:"title"`
+	Kind        string         `json:"kind"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+	IsPreferred bool           `json:"isPreferred,omitempty"`
+	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+	Command     *Command       `json:"command,omitempty"`
 }
 
 // WorkspaceEdit represents edits applied across the workspace.
@@ -112,30 +109,30 @@ type MarkupContent struct {
 
 // WorkspaceSettings holds editor-side configuration for the nox LSP plugin.
 type WorkspaceSettings struct {
-	Enabled          bool     `json:"enabled"`
-	ScanOnSave       bool     `json:"scanOnSave"`
-	ScanOnOpen       bool     `json:"scanOnOpen"`
-	SeverityFilter   []string `json:"severityFilter"`
-	IgnoredRules     []string `json:"ignoredRules"`
-	NoxBinaryPath    string   `json:"noxBinaryPath"`
-	AdditionalArgs   []string `json:"additionalArgs"`
-	ShowInlineHints  bool     `json:"showInlineHints"`
-	MaxDiagnostics   int      `json:"maxDiagnostics"`
+	Enabled         bool     `json:"enabled"`
+	ScanOnSave      bool     `json:"scanOnSave"`
+	ScanOnOpen      bool     `json:"scanOnOpen"`
+	SeverityFilter  []string `json:"severityFilter"`
+	IgnoredRules    []string `json:"ignoredRules"`
+	NoxBinaryPath   string   `json:"noxBinaryPath"`
+	AdditionalArgs  []string `json:"additionalArgs"`
+	ShowInlineHints bool     `json:"showInlineHints"`
+	MaxDiagnostics  int      `json:"maxDiagnostics"`
 }
 
 // NoxFinding is a simplified representation of a nox finding used as input.
 type NoxFinding struct {
-	RuleID      string `json:"rule_id"`
-	Severity    string `json:"severity"`
-	Confidence  string `json:"confidence"`
-	File        string `json:"file"`
-	StartLine   int    `json:"start_line"`
-	EndLine     int    `json:"end_line"`
-	StartCol    int    `json:"start_col"`
-	EndCol      int    `json:"end_col"`
-	Message     string `json:"message"`
-	Remediation string `json:"remediation,omitempty"`
-	CWE         string `json:"cwe,omitempty"`
+	RuleID      string   `json:"rule_id"`
+	Severity    string   `json:"severity"`
+	Confidence  string   `json:"confidence"`
+	File        string   `json:"file"`
+	StartLine   int      `json:"start_line"`
+	EndLine     int      `json:"end_line"`
+	StartCol    int      `json:"start_col"`
+	EndCol      int      `json:"end_col"`
+	Message     string   `json:"message"`
+	Remediation string   `json:"remediation,omitempty"`
+	CWE         string   `json:"cwe,omitempty"`
 	References  []string `json:"references,omitempty"`
 }
 
@@ -156,11 +153,6 @@ func SeverityToLSP(severity string) int {
 }
 
 // FindingToDiagnostic converts a nox finding into an LSP diagnostic.
-//
-// In production, this would:
-//  1. Receive findings from the nox scan pipeline
-//  2. Convert each finding to an LSP Diagnostic
-//  3. Send publishDiagnostics notifications to the editor
 func FindingToDiagnostic(f NoxFinding) Diagnostic {
 	diag := Diagnostic{
 		Range: Range{
@@ -208,12 +200,6 @@ func FindingsToPublishParams(findings []NoxFinding) []PublishDiagnosticsParams {
 
 // CreateSuppressionAction creates an LSP code action that inserts a
 // nox:ignore comment above the finding line.
-//
-// In production, this would:
-//  1. Receive a code action request from the editor
-//  2. Find matching diagnostics at the cursor position
-//  3. Generate a TextEdit that inserts the suppression comment
-//  4. Return the code action to the editor
 func CreateSuppressionAction(uri string, f NoxFinding) CodeAction {
 	suppressionLine := f.StartLine - 1 // 0-indexed, line above finding
 	if suppressionLine < 0 {
@@ -243,11 +229,6 @@ func CreateSuppressionAction(uri string, f NoxFinding) CodeAction {
 }
 
 // CreateHoverContent generates rich hover content for a finding.
-//
-// In production, this would:
-//  1. Receive a hover request at a position with a nox diagnostic
-//  2. Look up the full finding detail (remediation, CWE, references)
-//  3. Format as markdown for display in the editor
 func CreateHoverContent(f NoxFinding) Hover {
 	md := fmt.Sprintf("## %s: %s\n\n", f.RuleID, f.Message)
 	md += fmt.Sprintf("**Severity:** %s | **Confidence:** %s\n\n", f.Severity, f.Confidence)
@@ -294,52 +275,124 @@ func DefaultWorkspaceSettings() WorkspaceSettings {
 	}
 }
 
-func main() {
-	fmt.Println("nox-plugin-lsp v0.1.0")
-	fmt.Println("Track: developer-experience")
-	fmt.Println()
-	fmt.Println("Tools:")
-	fmt.Println("  publish_diagnostics - Publish findings as LSP diagnostics")
-	fmt.Println("  code_action         - Inline suppression via nox:ignore comments")
-	fmt.Println("  hover               - Finding details on hover")
-	fmt.Println()
+// protoSeverityString converts proto severity to string.
+func protoSeverityString(s pluginv1.Severity) string {
+	switch s {
+	case sdk.SeverityCritical:
+		return "critical"
+	case sdk.SeverityHigh:
+		return "high"
+	case sdk.SeverityMedium:
+		return "medium"
+	case sdk.SeverityLow:
+		return "low"
+	default:
+		return "info"
+	}
+}
 
-	// Demonstrate LSP message formatting with a sample finding.
-	sample := NoxFinding{
-		RuleID:      "SEC-001",
-		Severity:    "high",
-		Confidence:  "high",
-		File:        "/workspace/src/config.go",
-		StartLine:   42,
-		EndLine:     42,
-		StartCol:    10,
-		EndCol:      50,
-		Message:     "Hardcoded AWS access key detected",
-		Remediation: "Rotate the key immediately and use environment variables or a secret manager.",
-		CWE:         "798",
-		References:  []string{"https://cwe.mitre.org/data/definitions/798.html", "https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/"},
+// protoConfidenceString converts proto confidence to string.
+func protoConfidenceString(c pluginv1.Confidence) string {
+	switch c {
+	case sdk.ConfidenceHigh:
+		return "high"
+	case sdk.ConfidenceMedium:
+		return "medium"
+	case sdk.ConfidenceLow:
+		return "low"
+	default:
+		return "unknown"
+	}
+}
+
+// protoToNoxFinding converts a proto Finding to our local NoxFinding type.
+func protoToNoxFinding(f *pluginv1.Finding) NoxFinding {
+	nf := NoxFinding{
+		RuleID:     f.GetRuleId(),
+		Severity:   protoSeverityString(f.GetSeverity()),
+		Confidence: protoConfidenceString(f.GetConfidence()),
+		Message:    f.GetMessage(),
+	}
+	if loc := f.GetLocation(); loc != nil {
+		nf.File = loc.GetFilePath()
+		nf.StartLine = int(loc.GetStartLine())
+		nf.EndLine = int(loc.GetEndLine())
+		nf.StartCol = int(loc.GetStartColumn())
+		nf.EndCol = int(loc.GetEndColumn())
+	}
+	if meta := f.GetMetadata(); meta != nil {
+		nf.CWE = meta["cwe"]
+	}
+	return nf
+}
+
+func buildServer() *sdk.PluginServer {
+	manifest := sdk.NewManifest("nox/lsp", version).
+		Capability("lsp", "LSP diagnostics, code actions, and hover for nox findings").
+		ToolWithContext("convert_diagnostics", "Convert scan findings to LSP diagnostics format", true).
+		Tool("get_settings", "Return default workspace settings for the LSP plugin", true).
+		Done().
+		Safety(sdk.WithRiskClass(sdk.RiskPassive)).
+		Build()
+
+	return sdk.NewPluginServer(manifest).
+		HandleTool("convert_diagnostics", handleConvertDiagnostics).
+		HandleTool("get_settings", handleGetSettings)
+}
+
+func handleConvertDiagnostics(_ context.Context, req sdk.ToolRequest) (*pluginv1.InvokeToolResponse, error) {
+	resp := sdk.NewResponse()
+
+	for _, f := range req.Findings() {
+		nf := protoToNoxFinding(f)
+		uri := "file://" + nf.File
+		diag := FindingToDiagnostic(nf)
+		action := CreateSuppressionAction(uri, nf)
+		hover := CreateHoverContent(nf)
+
+		diagJSON, _ := json.Marshal(diag)
+		actionJSON, _ := json.Marshal(action)
+		hoverJSON, _ := json.Marshal(hover)
+
+		fingerprint := f.GetFingerprint()
+		if fingerprint == "" {
+			fingerprint = fmt.Sprintf("%s:%s:%d", f.GetRuleId(), nf.File, nf.StartLine)
+		}
+
+		body := fmt.Sprintf("### Diagnostic\n```json\n%s\n```\n\n### Code Action\n```json\n%s\n```\n\n### Hover\n```json\n%s\n```",
+			string(diagJSON), string(actionJSON), string(hoverJSON))
+
+		resp.Enrichment(fingerprint, "lsp-diagnostic", fmt.Sprintf("LSP diagnostic for %s", f.GetRuleId())).
+			Body(body).
+			WithMetadata("uri", uri).
+			WithMetadata("lsp_severity", fmt.Sprintf("%d", diag.Severity)).
+			Source("nox/lsp").
+			Done()
 	}
 
-	fmt.Println("Sample diagnostic:")
-	diag := FindingToDiagnostic(sample)
-	diagJSON, _ := json.MarshalIndent(diag, "  ", "  ")
-	fmt.Println("  " + string(diagJSON))
+	return resp.Build(), nil
+}
 
-	fmt.Println()
-	fmt.Println("Sample code action:")
-	action := CreateSuppressionAction("file:///workspace/src/config.go", sample)
-	actionJSON, _ := json.MarshalIndent(action, "  ", "  ")
-	fmt.Println("  " + string(actionJSON))
-
-	fmt.Println()
-	fmt.Println("Sample hover:")
-	hover := CreateHoverContent(sample)
-	hoverJSON, _ := json.MarshalIndent(hover, "  ", "  ")
-	fmt.Println("  " + string(hoverJSON))
-
-	fmt.Println()
-	fmt.Println("Default workspace settings:")
+func handleGetSettings(_ context.Context, _ sdk.ToolRequest) (*pluginv1.InvokeToolResponse, error) {
+	resp := sdk.NewResponse()
 	settings := DefaultWorkspaceSettings()
-	settingsJSON, _ := json.MarshalIndent(settings, "  ", "  ")
-	fmt.Println("  " + string(settingsJSON))
+	settingsJSON, _ := json.Marshal(settings)
+
+	resp.Enrichment("workspace-settings", "lsp-settings", "Default LSP workspace settings").
+		Body(string(settingsJSON)).
+		Source("nox/lsp").
+		Done()
+
+	return resp.Build(), nil
+}
+
+func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	srv := buildServer()
+	if err := srv.Serve(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "nox-plugin-lsp: %v\n", err)
+		os.Exit(1)
+	}
 }
