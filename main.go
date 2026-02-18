@@ -153,7 +153,7 @@ func SeverityToLSP(severity string) int {
 }
 
 // FindingToDiagnostic converts a nox finding into an LSP diagnostic.
-func FindingToDiagnostic(f NoxFinding) Diagnostic {
+func FindingToDiagnostic(f *NoxFinding) Diagnostic {
 	diag := Diagnostic{
 		Range: Range{
 			Start: Position{Line: f.StartLine - 1, Character: f.StartCol},
@@ -183,9 +183,9 @@ func FindingToDiagnostic(f NoxFinding) Diagnostic {
 // PublishDiagnosticsParams for each file.
 func FindingsToPublishParams(findings []NoxFinding) []PublishDiagnosticsParams {
 	byFile := make(map[string][]Diagnostic)
-	for _, f := range findings {
-		uri := "file://" + f.File
-		byFile[uri] = append(byFile[uri], FindingToDiagnostic(f))
+	for i := range findings {
+		uri := "file://" + findings[i].File
+		byFile[uri] = append(byFile[uri], FindingToDiagnostic(&findings[i]))
 	}
 
 	var params []PublishDiagnosticsParams
@@ -200,7 +200,7 @@ func FindingsToPublishParams(findings []NoxFinding) []PublishDiagnosticsParams {
 
 // CreateSuppressionAction creates an LSP code action that inserts a
 // nox:ignore comment above the finding line.
-func CreateSuppressionAction(uri string, f NoxFinding) CodeAction {
+func CreateSuppressionAction(uri string, f *NoxFinding) CodeAction {
 	suppressionLine := f.StartLine - 1 // 0-indexed, line above finding
 	if suppressionLine < 0 {
 		suppressionLine = 0
@@ -229,7 +229,7 @@ func CreateSuppressionAction(uri string, f NoxFinding) CodeAction {
 }
 
 // CreateHoverContent generates rich hover content for a finding.
-func CreateHoverContent(f NoxFinding) Hover {
+func CreateHoverContent(f *NoxFinding) Hover {
 	md := fmt.Sprintf("## %s: %s\n\n", f.RuleID, f.Message)
 	md += fmt.Sprintf("**Severity:** %s | **Confidence:** %s\n\n", f.Severity, f.Confidence)
 
@@ -346,9 +346,9 @@ func handleConvertDiagnostics(_ context.Context, req sdk.ToolRequest) (*pluginv1
 	for _, f := range req.Findings() {
 		nf := protoToNoxFinding(f)
 		uri := "file://" + nf.File
-		diag := FindingToDiagnostic(nf)
-		action := CreateSuppressionAction(uri, nf)
-		hover := CreateHoverContent(nf)
+		diag := FindingToDiagnostic(&nf)
+		action := CreateSuppressionAction(uri, &nf)
+		hover := CreateHoverContent(&nf)
 
 		diagJSON, _ := json.Marshal(diag)
 		actionJSON, _ := json.Marshal(action)
@@ -386,12 +386,15 @@ func handleGetSettings(_ context.Context, _ sdk.ToolRequest) (*pluginv1.InvokeTo
 	return resp.Build(), nil
 }
 
-func main() {
+func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	srv := buildServer()
-	if err := srv.Serve(ctx); err != nil {
+	return buildServer().Serve(ctx)
+}
+
+func main() {
+	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "nox-plugin-lsp: %v\n", err)
 		os.Exit(1)
 	}

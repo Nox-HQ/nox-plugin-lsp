@@ -176,7 +176,7 @@ func TestFindingToDiagnostic(t *testing.T) {
 		CWE:        "798",
 	}
 
-	diag := FindingToDiagnostic(f)
+	diag := FindingToDiagnostic(&f)
 
 	if diag.Range.Start.Line != 41 {
 		t.Errorf("Start.Line = %d, want 41", diag.Range.Start.Line)
@@ -226,7 +226,7 @@ func TestFindingToDiagnostic_NoCWE(t *testing.T) {
 		Message:   "Unpinned base image",
 	}
 
-	diag := FindingToDiagnostic(f)
+	diag := FindingToDiagnostic(&f)
 
 	if diag.CodeDescription != nil {
 		t.Errorf("expected nil CodeDescription when no CWE, got %+v", diag.CodeDescription)
@@ -275,7 +275,7 @@ func TestCreateSuppressionAction(t *testing.T) {
 		EndLine:   42,
 	}
 
-	action := CreateSuppressionAction("file:///workspace/config.go", f)
+	action := CreateSuppressionAction("file:///workspace/config.go", &f)
 
 	if !strings.Contains(action.Title, "SEC-001") {
 		t.Errorf("Title = %q, should contain SEC-001", action.Title)
@@ -319,7 +319,7 @@ func TestCreateSuppressionAction_FirstLine(t *testing.T) {
 		EndLine:   1,
 	}
 
-	action := CreateSuppressionAction("file:///workspace/Dockerfile", f)
+	action := CreateSuppressionAction("file:///workspace/Dockerfile", &f)
 	changes := action.Edit.Changes["file:///workspace/Dockerfile"]
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 text edit, got %d", len(changes))
@@ -346,7 +346,7 @@ func TestCreateHoverContent(t *testing.T) {
 		References:  []string{"https://cwe.mitre.org/data/definitions/798.html"},
 	}
 
-	hover := CreateHoverContent(f)
+	hover := CreateHoverContent(&f)
 
 	if hover.Contents.Kind != "markdown" {
 		t.Errorf("Kind = %q, want markdown", hover.Contents.Kind)
@@ -387,7 +387,7 @@ func TestCreateHoverContent_Minimal(t *testing.T) {
 		Message:  "Unpinned image",
 	}
 
-	hover := CreateHoverContent(f)
+	hover := CreateHoverContent(&f)
 	md := hover.Contents.Value
 
 	if !strings.Contains(md, "IAC-002") {
@@ -451,7 +451,7 @@ func TestDiagnosticJSONSerialization(t *testing.T) {
 		CWE:       "798",
 	}
 
-	diag := FindingToDiagnostic(f)
+	diag := FindingToDiagnostic(&f)
 	data, err := json.Marshal(diag)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
@@ -475,7 +475,7 @@ func TestDiagnosticJSONSerialization(t *testing.T) {
 
 func TestCodeActionJSONSerialization(t *testing.T) {
 	f := NoxFinding{RuleID: "SEC-001", StartLine: 10}
-	action := CreateSuppressionAction("file:///test.go", f)
+	action := CreateSuppressionAction("file:///test.go", &f)
 
 	data, err := json.Marshal(action)
 	if err != nil {
@@ -518,7 +518,7 @@ func testClient(t *testing.T) pluginv1.PluginServiceClient {
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 
 	return pluginv1.NewPluginServiceClient(conn)
 }
